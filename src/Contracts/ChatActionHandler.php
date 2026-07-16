@@ -37,8 +37,16 @@ interface ChatActionHandler
     /**
      * Potvrdí návrh a provede zápis v doméně host aplikace.
      *
+     * `$context` nese PŮVOD návrhu (`conversation_id`, `chat_message_id`), aby si host mohl
+     * do svého auditu zapsat, ZE KTERÉ konverzace zápis vzešel. Bez něj auditní stopa ví jen
+     * „tohle založil chatbot“, ale ne odkud — to je proti ADR-004 (nález verify TASK-095:
+     * extrakce tuhle vazbu ztratila, dřív ji ChatController předával přímo).
+     *
+     * Parametr má default, takže implementace, které původ nepotřebují, ho můžou ignorovat.
+     *
      * @param  array<string, mixed>  $payload  Návrh z proposal odpovědi modelu.
      * @param  mixed  $user  Autentizovaný uživatel host aplikace.
+     * @param  array{conversation_id?: int|string, chat_message_id?: int|string}  $context  Původ návrhu.
      */
-    public function confirm(array $payload, mixed $user): ChatActionResult;
+    public function confirm(array $payload, mixed $user, array $context = []): ChatActionResult;
 }

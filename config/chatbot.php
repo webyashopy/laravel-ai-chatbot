@@ -85,16 +85,21 @@ return [
     ],
 
     // Výchozí model nové konverzace (musí být v allowlistu 'models' níže).
-    'default_model' => env('CHATBOT_MODEL', 'claude-sonnet-4-5-20250929'),
+    // POZOR: samostatný env od 'model' níže. Host typicky chce silný model na chat
+    // a levný na complete()/OCR; sdílený env by tuhle volbu zabil (nález verify TASK-091).
+    'default_model' => env('CHATBOT_CHAT_MODEL', env('CHATBOT_MODEL', 'claude-sonnet-5')),
 
     // Výchozí model pro jednorázové volání complete() (např. OCR v hostovi).
-    'model' => env('CHATBOT_MODEL', 'claude-sonnet-4-5-20250929'),
+    // Default je ZÁMĚRNĚ levný — complete() je typicky vysokoobjemová extrakce, ne konverzace.
+    // JNS mělo ocr.model = haiku; kdyby tu byl sonnet, překlopení OCR (TASK-092) by tiše
+    // zdražilo každé volání ~3,5x. Volající smí model přepsat per-volání.
+    'model' => env('CHATBOT_COMPLETE_MODEL', env('CHATBOT_MODEL', 'claude-haiku-4-5')),
 
     // Allowlist modelů dostupných pro chat (přepínání). Mimo allowlist → 422.
     'models' => [
-        'claude-sonnet-4-5-20250929',
-        'claude-haiku-4-5-20251001',
-        'claude-opus-4-1-20250805',
+        'claude-sonnet-5',
+        'claude-haiku-4-5',
+        'claude-opus-4-8',
     ],
 
     /*
@@ -109,22 +114,24 @@ return [
     |
     */
     'pricing' => [
-        'claude-sonnet-4-5-20250929' => ['input' => 70.0, 'output' => 350.0],
-        'claude-haiku-4-5-20251001' => ['input' => 20.0, 'output' => 100.0],
-        'claude-opus-4-1-20250805' => ['input' => 350.0, 'output' => 1750.0],
+        // Kurz ČNB 2026-06-28: 1 USD = 21,28 CZK. USD ceny (Anthropic, 2026-07-16):
+        // Sonnet 5 $3/$15, Opus 4.8 $5/$25, Haiku 4.5 $1/$5 za Mtok.
+        'claude-sonnet-5' => ['input' => 63.84, 'output' => 319.2],
+        'claude-haiku-4-5' => ['input' => 21.28, 'output' => 106.4],
+        'claude-opus-4-8' => ['input' => 106.4, 'output' => 532.0],
     ],
 
     // Retry/backoff volání Anthropic API (exponenciální — delay_ms * multiplier^n).
     'retry' => [
-        'max_attempts' => 3,
-        'delay_ms' => 1000,
-        'multiplier' => 2,
+        'max_attempts' => (int) env('CHATBOT_RETRY_MAX_ATTEMPTS', 3),
+        'delay_ms' => (int) env('CHATBOT_RETRY_DELAY_MS', 1000),
+        'multiplier' => (int) env('CHATBOT_RETRY_MULTIPLIER', 2),
     ],
 
     // Timeouty HTTP klienta (sekundy).
     'timeouts' => [
-        'request' => 60,
-        'connect' => 10,
+        'request' => (int) env('CHATBOT_HTTP_TIMEOUT', 60),
+        'connect' => (int) env('CHATBOT_HTTP_CONNECT_TIMEOUT', 10),
     ],
 
     /*
@@ -137,13 +144,25 @@ return [
     | Limit je počet volání za minutu na uživatele; neznámý purpose
     | spadne na 'default'.
     |
+    | Env-driven záměrně: v JNS byly limity přepínatelné přes OCR_RATE_PER_MINUTE
+    | a AI_CHAT_RATE_PER_MINUTE. Hardcode by tichým způsobem zahodil produkční
+    | override (nález verify TASK-091) — defaulty odpovídají dnešnímu JNS.
+    |
     */
     'rate' => [
         'per_purpose' => [
-            'chat' => 20,
-            'ocr' => 10,
+            'chat' => (int) env('CHATBOT_RATE_CHAT', 20),
+            'ocr' => (int) env('CHATBOT_RATE_OCR', 10),
         ],
-        'default' => 10,
+        'default' => (int) env('CHATBOT_RATE_DEFAULT', 10),
+
+        // VOLITELNÝ globální strop (TASK-103) — mapa purpose => limit/min NAPŘÍČ
+        // celou aplikací (bucket bez userId), platí SOUČASNĚ s per_purpose výše
+        // (musí projít oba). Prázdné pole (default) = vypnuto, chování beze změny
+        // (zpětná kompatibilita). Host si zapíná per účel — JNS ho používá pro
+        // 'ocr', protože per-user limit sám o sobě neomezí souhrnnou útratu
+        // napříč všemi uživateli (bezpečnostní audit 2026-07-15).
+        'global_per_purpose' => [],
     ],
 
     /*
@@ -167,9 +186,9 @@ return [
             // (i když je v allowlistu 'models') → fallback na complete()
             // (čistě textová odpověď, žádné nástroje) místo pádu.
             'capable_models' => [
-                'claude-sonnet-4-5-20250929',
-                'claude-haiku-4-5-20251001',
-                'claude-opus-4-1-20250805',
+                'claude-sonnet-5',
+                'claude-haiku-4-5',
+                'claude-opus-4-8',
             ],
         ],
     ],

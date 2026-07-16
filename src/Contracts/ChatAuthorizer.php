@@ -19,7 +19,7 @@ namespace Webyashopy\Chatbot\Contracts;
  *
  * Parametr `$user` je typovaný `mixed`, PROTOŽE balíček host User model
  * neimportuje: konkrétní třída uživatele vzniká až v host aplikaci
- * (viz `chatbot.models.user_model`). Tvrdá vazba na `App\Models\User` by
+ * (viz `chatbot.user_model`). Tvrdá vazba na `App\Models\User` by
  * balíček přivázala k jedné aplikaci a znemožnila znovupoužití.
  *
  * Pozn.: tento kontrakt nenahrazuje defense-in-depth — každý tool handler

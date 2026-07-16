@@ -30,8 +30,11 @@ it('config má očekávané výchozí hodnoty', function () {
         ->and(config('chatbot.routes.middleware'))->toBe(['web', 'auth'])
         ->and(config('chatbot.api.url'))->toBe('https://api.anthropic.com/v1')
         ->and(config('chatbot.api.version'))->toBe('2023-06-01')
-        ->and(config('chatbot.default_model'))->toBe('claude-sonnet-4-5-20250929')
-        ->and(config('chatbot.model'))->toBe('claude-sonnet-4-5-20250929')
+        // Chat a complete() mají ZÁMĚRNĚ různý default: silný model na konverzaci,
+        // levný na jednorázovou extrakci (OCR). Sdílený default by po překlopení OCR
+        // v TASK-092 tiše zdražil každé volání ~3,5x — viz komentář v config/chatbot.php.
+        ->and(config('chatbot.default_model'))->toBe('claude-sonnet-5')
+        ->and(config('chatbot.model'))->toBe('claude-haiku-4-5')
         ->and(config('chatbot.chat.history_limit'))->toBe(20)
         ->and(config('chatbot.chat.tools.enabled'))->toBeTrue()
         ->and(config('chatbot.chat.tools.max_iterations'))->toBe(5)
@@ -47,7 +50,7 @@ it('allowlist modelů a ceník sedí (každý model má cenu)', function () {
     $models = config('chatbot.models');
     $pricing = config('chatbot.pricing');
 
-    expect($models)->toContain('claude-sonnet-4-5-20250929')
+    expect($models)->toContain('claude-sonnet-5')
         ->and(config('chatbot.default_model'))->toBeIn($models)
         ->and(config('chatbot.chat.tools.capable_models'))->toBe($models);
 

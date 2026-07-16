@@ -11,6 +11,12 @@ namespace Webyashopy\Chatbot\Support;
  * Chování při validační chybě je smluvní a NESMÍ se posunout: controller
  * odpoví 302 + `session('errors')`, ne 422 JSON (odchylka zaznamenaná
  * v ADR-017).
+ *
+ * ODCHYLKA od náčrtu v `contracts/api/chatbot-package.md`: navíc je zde
+ * `$resultId`. Kontrakt `chatbot-tools.md` (ten se posunout NESMÍ) říká, že
+ * po úspěšném potvrzení nese `action.result_id` id vytvořeného záznamu a
+ * frontend (`chat-action-card`) na něj staví odkaz na zápis. Bez tohoto pole
+ * by handler hosta id neměl jak vrátit a `result_id` by z action zmizelo.
  */
 final class ChatActionResult
 {
@@ -20,6 +26,7 @@ final class ChatActionResult
      * @param  array<string, mixed>|null  $errors  Validační chyby → 302 + session('errors').
      * @param  string|null  $redirectRoute  Cíl přesměrování; null = default 'chat.show'.
      * @param  array<string, mixed>|null  $redirectParams  Parametry route pro přesměrování.
+     * @param  int|string|null  $resultId  Id zapsaného záznamu → `action.result_id`.
      */
     public function __construct(
         public bool $ok,
@@ -27,15 +34,17 @@ final class ChatActionResult
         public ?array $errors = null,
         public ?string $redirectRoute = null,
         public ?array $redirectParams = null,
+        public int|string|null $resultId = null,
     ) {}
 
     /**
-     * Úspěšný zápis — volitelně s cílem přesměrování na vytvořený záznam.
+     * Úspěšný zápis — volitelně s id zapsaného záznamu a cílem přesměrování.
      *
      * @param  array<string, mixed>|null  $redirectParams
      */
     public static function success(
         ?string $message = null,
+        int|string|null $resultId = null,
         ?string $redirectRoute = null,
         ?array $redirectParams = null,
     ): self {
@@ -44,6 +53,7 @@ final class ChatActionResult
             message: $message,
             redirectRoute: $redirectRoute,
             redirectParams: $redirectParams,
+            resultId: $resultId,
         );
     }
 

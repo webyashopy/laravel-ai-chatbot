@@ -4,8 +4,10 @@ Znovupoužitelný **AI chatbot (Anthropic Claude)** pro Laravel aplikace —
 AI klient, usage logging, per-user API klíče a agentní tool-loop nad daty
 host aplikace.
 
-> **Status:** Kostra (TASK-090) — config, kontrakty a registr. AI klient,
-> modely, controller a routy přijdou v TASK-091..094.
+> **Status:** IMPLEMENTOVÁNO (TASK-090..101, 103). Extrakce z JirkaNaSteroidech (ADR-019
+> hostující aplikace) je dokončená — AI klient, usage logging, per-user klíče, agentní
+> tool-loop, modely konverzací, `ChatController` i console command `chatbot:models-check`
+> jsou hotové a otestované (117 testů, Testbench + Pest).
 
 ## Filozofie
 
@@ -54,10 +56,18 @@ ANTHROPIC_API_VERSION=2023-06-01
 CHATBOT_MODEL=claude-sonnet-4-5-20250929
 ```
 
-### 4) Vlastní autorizace (volitelné, doporučené)
+### 4) Vlastní autorizace (POVINNÉ pro aplikace s rolemi)
 
-Default pustí do chatu kohokoli přihlášeného. Aplikace s rolemi si ve svém
-provideru nabinduje vlastní implementaci:
+**Default balíčku (`AllowAuthenticatedChatAuthorizer`) pustí do chatu KOHOKOLI
+přihlášeného** — a to včetně `canConfirmAction()`, tedy včetně **potvrzení
+zápisu** (proposal → skutečný zápis do domény). Jinými slovy: bez vlastního
+bindingu smí zápis potvrdit libovolný přihlášený uživatel, ne jen role k tomu
+určené. Pro každou aplikaci s rolemi/oprávněními je proto vlastní binding
+**povinný**, ne "nice to have" (nález bezpečnostního auditu TASK-099, LOW —
+riziko samo o sobě nízké, protože zápis stále jde jen přes hostův FormRequest
+a je auditovaný, ale princip least privilege to poruší).
+
+Aplikace si ve vlastním provideru nabinduje vlastní implementaci:
 
 ```php
 // app/Providers/ChatbotServiceProvider.php
@@ -68,6 +78,30 @@ public function register(): void
     $this->app->bind(ChatAuthorizer::class, PermissionChatAuthorizer::class);
 }
 ```
+
+```php
+// app/Support/Chatbot/PermissionChatAuthorizer.php
+use Webyashopy\Chatbot\Contracts\ChatAuthorizer;
+
+class PermissionChatAuthorizer implements ChatAuthorizer
+{
+    public function canUseChat(mixed $user): bool
+    {
+        return $user?->can('chat.use') ?? false;
+    }
+
+    public function canConfirmAction(mixed $user, string $kind): bool
+    {
+        // Případně jemnější granularita per $kind (např. jiné oprávnění
+        // pro potvrzení faktury než objednávky).
+        return $user?->can('chat.use') ?? false;
+    }
+}
+```
+
+Binding je přes `bind()` (ne `singleton()`) a aplikační provider bootuje až
+po balíčkovém, takže vlastní implementace vždy vyhraje nad defaultem
+(`bindIf()` v balíčku).
 
 ## Konfigurace (`config/chatbot.php`)
 
@@ -82,7 +116,7 @@ public function register(): void
 | `default_model` | `claude-sonnet-4-5-20250929` | Model nové konverzace (env `CHATBOT_MODEL`) |
 | `model` | `claude-sonnet-4-5-20250929` | Model pro jednorázové `complete()` |
 | `models` | 3 modely | Allowlist modelů pro chat; mimo něj → 422 |
-| `pricing` | viz config | CZK / 1 Mtok (`input`/`output`) pro výpočet `cost` |
+| `pricing` | viz config | CZK / 1 Mtok (`input`/`output`) pro výpočet `cost`. **Models API cenu NEVRACÍ** — ceník je vždy ruční, aktualizuj dle ceníku Anthropic a kurzu CZK/USD (viz `chatbot:models-check` níže) |
 | `retry` | 3 / 1000 ms / ×2 | Retry a exponenciální backoff volání API |
 | `timeouts` | 60 / 10 s | HTTP `request` / `connect` timeout |
 | `rate.per_purpose` | `chat: 20`, `ocr: 10` | Limit volání/min na uživatele dle účelu |
@@ -109,13 +143,135 @@ Bindingy jsou přes `bind()`, ne `singleton()` — host je snadno přepíše.
 
 ### Registrace nástrojů a handlerů
 
-Primárně discovery nad cestami z configu; explicitně pak:
+Primární cesta je **self-discovery**: nový nástroj = **jeden nový soubor**
+v některém z adresářů `tools.discover_paths`. Žádný registr, seznam v configu
+ani jiný sdílený soubor se needituje — dva vývojáři tak přidávají nástroje
+souběžně bez kolize v gitu (ADR-019 §6; ruční seznam byl zamítnut).
+
+```php
+// app/Services/Ai/Tools/ReadFakturyTool.php  — víc není potřeba
+class ReadFakturyTool implements \Webyashopy\Chatbot\Contracts\ChatTool { … }
+```
+
+Sken je rekurzivní (podadresáře `Tools/Read/`, `Tools/Write/` fungují),
+namespace se odvozuje z **PSR-4 mapy composeru** (nemusí to být `App\`),
+běží **jen nad adresáři hosta** a cesty uvnitř `vendor/` přeskakuje.
+Stejný mechanismus platí pro `ChatActionHandler` a `actions.discover_paths`.
+
+Pro třídy mimo prohledávané cesty je explicitní API:
 
 ```php
 use Webyashopy\Chatbot\Chatbot;
 
 Chatbot::registerTool(ReadFakturyTool::class);
 Chatbot::registerActionHandler(PartnerActionHandler::class);
+```
+
+Kill-switch `chat.tools.enabled = false` → registr nástrojů je prázdný
+(modelu se nepošle žádný nástroj). Na `ChatActionHandlerRegistry` se
+záměrně nevztahuje — rozpracovaný návrh musí jít potvrdit i potom.
+
+### Jak napsat vlastní `ChatTool`
+
+```php
+namespace App\Services\Ai\Tools\Read;
+
+use Webyashopy\Chatbot\Contracts\ChatTool;
+
+class ReadFakturyTool implements ChatTool
+{
+    public function name(): string
+    {
+        return 'read_faktury';
+    }
+
+    public function definition(): array
+    {
+        // Anthropic tool schema (name/description/input_schema).
+        return ['name' => $this->name(), 'description' => '…', 'input_schema' => [...]];
+    }
+
+    public function handle(array $input, mixed $user): array
+    {
+        // 1) RE-AUTORIZUJ pod $user — nikdy nespoléhej, že o autorizaci
+        //    rozhodl jen ChatAuthorizer (defense-in-depth, ADR-017 §5).
+        // 2) Typované filtry přes Eloquent (žádný raw SQL).
+        // 3) Tvrdý limit řádků (doporučeno ≤50) — model nemá dostat celou tabulku.
+        return ['faktury' => [...]];
+    }
+}
+```
+
+Read nástroje vždy vrací data. **Write nástroje NIC nezapisují** — vrátí
+`['status' => 'proposal', 'kind' => '…', 'payload' => [...], 'summary' => '…']`
+a smyčku tím okamžitě ukončí (human-in-the-loop, ADR-017 §4).
+
+### Jak napsat vlastní `ChatActionHandler`
+
+Potvrzení proposalu (`ChatActionHandler::confirm()`) je jediné místo, kde
+smí dojít ke skutečnému zápisu domény. **Kontrakt to technicky NEVYNUCUJE** —
+handler by mohl zapsat cokoliv čímkoliv, disciplína je na implementaci hosta:
+
+```php
+namespace App\Services\Ai\Actions;
+
+use Webyashopy\Chatbot\Contracts\ChatActionHandler;
+use Webyashopy\Chatbot\Support\ChatActionResult;
+
+class CustomerOrderActionHandler implements ChatActionHandler
+{
+    public function kind(): string
+    {
+        return 'customer_order';
+    }
+
+    public function confirm(array $payload, mixed $user, array $context = []): ChatActionResult
+    {
+        // SPRÁVNĚ: validuj payload přes existující FormRequest hosta (payload
+        // pochází od modelu, tedy z NEOVĚŘENÉHO zdroje) a zapiš přes stávající
+        // aplikační cestu (např. Controller::createFromValidated()) — NE
+        // Model::create() přímo z handleru. Payload od modelu nikdy nesmí
+        // obejít validaci, kterou prochází ruční formulář.
+        $validated = app(StoreCustomerOrderRequest::class)->validateResolved($payload);
+        $order = app(CustomerOrderController::class)->createFromValidated($validated, $user);
+
+        // Audit s origin=chatbot + $context (conversation_id/chat_message_id,
+        // ADR-004) — auditní stopa musí vědět, ŽE i ODKUD zápis vzešel.
+        AuditLog::record('customer_order.create', $order, context: [
+            'origin' => 'chatbot',
+            ...$context,
+        ]);
+
+        return ChatActionResult::success(
+            message: 'Objednávka byla založena.',
+            resultId: $order->id,
+            redirectRoute: 'orders.show',
+            redirectParams: ['order' => $order->id],
+        );
+    }
+}
+```
+
+Neplatný payload → `ChatActionResult::failure($message, $errors)`, controller
+z toho udělá **302 + `session('errors')`** (standardní Laravel FormRequest
+chování), ne holé 422 JSON.
+
+### Systémový prompt
+
+`Support\SystemPrompt` skládá prompt ze **fixní preambule balíčku**
+(role, práce s nástroji, zásada human-in-the-loop) a **doménového kontextu
+hosta** z `prompts.context`. Host preambuli nemůže přepsat ani vypnout —
+prompt je bezpečnostní prvek (ADR-019 §7) a zásada potvrzování zápisu
+z něj nesmí zmizet. Kontext se připojuje až za preambuli a uzavírá ho fixní
+zápatí balíčku, které jeho podřízenost pravidlům výslovně kotví — výsledné
+pořadí je `preambule → kontext hosta → zápatí`. Poslední slovo tak má vždy
+balíček, ne host.
+
+`prompts.context` snese i pole (seznam odstavců se spojí); hodnota jiného
+typu se ignoruje, prompt se kvůli configu hosta nikdy nerozbije.
+
+```php
+'prompts' => ['context' => 'Jsi asistent v logistickém systému Alewerans Logistics. …'],
 ```
 
 ## Bezpečnostní invarianty
@@ -128,6 +284,38 @@ Chatbot::registerActionHandler(PartnerActionHandler::class);
 5. Tvrdý limit iterací smyčky.
 6. Bezpečnostní preambule promptu je fixní v balíčku.
 7. `user_ai_settings.api_key` je `encrypted`, do frontendu nikdy plaintext.
+
+## Console command `chatbot:models-check`
+
+```bash
+php artisan chatbot:models-check
+```
+
+Zavolá Anthropic Models API (`GET {chatbot.api.url}/models`) a porovná
+`chatbot.models` + `chatbot.chat.tools.capable_models` proti reálně
+dostupným modelům. VAROVÁNÍM (ne chybou) nahlásí:
+
+- model, který z API zmizel (retired nebo přejmenovaný),
+- model uvedený jako tool-capable (`chat.tools.capable_models`), který
+  chybí v allowlistu `chatbot.models`.
+
+**Nic nepřepíná automaticky.** Floating alias typu „nejnovější Opus"
+v Anthropic API neexistuje (modely mají fixní id) a auto-upgrade mezi
+generacemi je breaking change — modely řady Opus 4.7+ odmítají
+`temperature`/`top_p`/`top_k` i `budget_tokens` (400 Bad Request), takže
+tichá záměna modelu v configu by mohla shodit produkční provoz. Rozhodnutí,
+co s nahlášeným modelem udělat, je vždy na člověku.
+
+Naplánován **týdně** (`ChatbotServiceProvider` přes
+`callAfterResolving(Schedule::class, ...)`, po vzoru `tickets:notify-stale`
+z `webyashopy/laravel-ticketing-system`) — scheduling se automaticky
+přeskočí, když `chatbot.api.key` (env `ANTHROPIC_API_KEY`) není nastavený,
+aby cron zbytečně nevolal příkaz, který se stejně hned přeskočí.
+
+**Explicitní poznámka:** Models API **nevrací cenu modelu** (`pricing`) —
+`config('chatbot.pricing')` proto zůstává výhradně ruční a `chatbot:models-check`
+ho nekontroluje. `ai_usage_logs.cost` je tak přesný, jak často host aktualizuje
+ceník dle skutečného ceníku Anthropic.
 
 ## Vývoj
 

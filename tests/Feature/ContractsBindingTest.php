@@ -34,11 +34,20 @@ it('AllowAuthenticatedChatAuthorizer pustí jen přihlášeného', function () {
 });
 
 it('ChatActionResult nese výsledek potvrzení akce', function () {
-    $ok = ChatActionResult::success('Objednávka vytvořena', 'objednavky.show', ['objednavka' => 3]);
+    // Pojmenované argumenty záměrně — `success()` má víc volitelných parametrů
+    // a pozičně by se snadno zaměnily (`resultId` vs. `redirectRoute`).
+    $ok = ChatActionResult::success(
+        message: 'Objednávka vytvořena',
+        resultId: 3,
+        redirectRoute: 'objednavky.show',
+        redirectParams: ['objednavka' => 3],
+    );
 
     expect($ok->ok)->toBeTrue()
         ->and($ok->message)->toBe('Objednávka vytvořena')
         ->and($ok->errors)->toBeNull()
+        // `result_id` je smluvní (chatbot-tools.md) — FE na něj váže odkaz na záznam.
+        ->and($ok->resultId)->toBe(3)
         ->and($ok->redirectRoute)->toBe('objednavky.show')
         ->and($ok->redirectParams)->toBe(['objednavka' => 3]);
 
@@ -116,7 +125,7 @@ class DummyActionHandler implements ChatActionHandler
         return 'dummy';
     }
 
-    public function confirm(array $payload, mixed $user): ChatActionResult
+    public function confirm(array $payload, mixed $user, array $context = []): ChatActionResult
     {
         return ChatActionResult::success('OK');
     }
