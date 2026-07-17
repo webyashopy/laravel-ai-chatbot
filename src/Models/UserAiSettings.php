@@ -32,6 +32,16 @@ class UserAiSettings extends Model
     ];
 
     /**
+     * `api_key` se nesmí nikdy dostat do serializace modelu (toArray/toJson) —
+     * defense-in-depth proti úniku do Inertia props přes vztažené relace
+     * (viz TASK-PT-006-fix-1: `HandleInertiaRequests::share()` serializuje
+     * `auth.user` včetně načtených relací).
+     *
+     * @var array<int, string>
+     */
+    protected $hidden = ['api_key'];
+
+    /**
      * @return array<string, string>
      */
     protected function casts(): array

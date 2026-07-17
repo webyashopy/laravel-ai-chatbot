@@ -142,6 +142,29 @@ class AiModelsAndMigrationsTest extends TestCase
     }
 
     /**
+     * TASK-PT-006-fix-1 — `api_key` se nesmí dostat do serializace modelu
+     * (toArray/toJson), i když je relace `user->aiSettings` eager-loaded
+     * a instance uživatele je serializovaná hostem (např. do Inertia props).
+     */
+    public function test_api_key_neni_v_serializaci_modelu(): void
+    {
+        $user = $this->createUser();
+
+        $settings = UserAiSettings::create([
+            'user_id' => $user->id,
+            'api_key' => 'sk-ant-tajny-klic',
+            'preferred_model' => 'claude-haiku-4-5',
+        ]);
+
+        $array = $settings->toArray();
+        $json = $settings->toJson();
+
+        $this->assertArrayNotHasKey('api_key', $array);
+        $this->assertStringNotContainsString('api_key', $json);
+        $this->assertStringNotContainsString('sk-ant-tajny-klic', $json);
+    }
+
+    /**
      * Balíček host User model neimportuje — relace se staví z configu.
      */
     public function test_relace_na_usera_se_bere_z_configu(): void
