@@ -7,6 +7,28 @@ verzování dle [SemVer](https://semver.org/lang/cs/).
 
 ## [Nezveřejněno]
 
+Zatím nic.
+
+## [0.1.1] - 2026-07-17
+
+### Opraveno
+- **Únik `api_key` do frontendu (TASK-PT-006-fix-1, kritický nález e2e testu).**
+  `Models\UserAiSettings` mělo `encrypted` cast na `api_key`, ale bez `$hidden` —
+  při serializaci uživatele s eager-loaded relací `aiSettings` (typicky
+  `HandleInertiaRequests::share()` → `auth.user`) unikal dešifrovaný klíč do
+  FE. Přidáno `$hidden = ['api_key']` jako defense-in-depth, nezávisle na tom,
+  kdo relaci kam připne. Zamyká `AiModelsAndMigrationsTest`.
+
+## [0.1.0] - 2026-07-17
+
+### Breaking (pro hosty přecházející z vlastního `config/ai.php`)
+- Host aplikace (JNS) měla vlastní `config/ai.php` — ten touto extrakcí
+  **zaniká** a je nahrazen `config/chatbot.php` balíčku. Klíče se mapují
+  `ai.*` → `chatbot.*` (`ai.models` → `chatbot.models`,
+  `services.anthropic.*` → `chatbot.api.*` atd., viz sekce Změněno níže).
+  Hosté migrující z předchozí in-app implementace musí `config/ai.php`
+  smazat a doménové env proměnné přemapovat do `chatbot.*` / `CHATBOT_*`.
+
 ### Přidáno
 - **Chat jádro (TASK-094, ADR-016/017 → ADR-019).** Přeneseno z JNS: modely
   `Models\ChatConversation` + `Models\ChatMessage`, enum `Enums\ChatRole`,
