@@ -7,7 +7,34 @@ verzování dle [SemVer](https://semver.org/lang/cs/).
 
 ## [Nezveřejněno]
 
-Zatím nic.
+### Přidáno
+- **Self-service nastavení per-user API klíče (`ChatSettingsController`).**
+  Nové routy `chat.settings.show` (GET `chat/nastaveni`),
+  `chat.settings.update` (PUT `chat/nastaveni`) a `chat.settings.key.destroy`
+  (DELETE `chat/nastaveni/klic`) — uživatel spravuje výhradně vlastní záznam
+  `user_ai_settings`. Do FE jde jen `has_api_key: bool` + `preferred_model`
+  + `require_user_key`; klíč samotný se neposílá nikdy. Inertia stránku
+  `chat/settings` dodává host (vzor `chat/index`). Routy jsou registrované
+  PŘED wildcard `/{conversation}` a konverzační wildcardy dostaly
+  `whereNumber` — `nastaveni` nesmí spadnout do route-model bindingu.
+- **Striktní režim per-user klíčů `chatbot.api.require_user_key`**
+  (env `CHATBOT_REQUIRE_USER_KEY`, default `false` = dnešní fallback
+  user → env beze změny). Zapnutý režim: volání `AiService` S uživatelem bez
+  vlastního klíče vyhodí novou `Exceptions\MissingUserApiKeyException`
+  (před rate limitem i usage logem — žádné volání neproběhlo), volání BEZ
+  usera (systémová, `chatbot:models-check`) jedou na serverový klíč dál.
+  `ChatController::store()/message()` uživatele bez klíče odmítne už na
+  vstupu (302 + `errors.api_key`) — výjimka nesmí zapadnout v graceful
+  catch větvích `exchange*()` a ve `store()` by vznikla prázdná konverzace.
+- Veřejné helpery `AiService::requiresUserKey()` a
+  `AiService::userHasApiKey($user)` — host si stav zjistí bez sahání na
+  config/DB balíčku (např. pro banner „nastavte si klíč" ve vlastním UI).
+- Testy: `ChatSettingsControllerTest` (smluvní názvy rout, neúnik klíče do
+  props, šifrování v DB, updateOrCreate 1:1, validace, 403 přes
+  `ChatAuthorizer`, kolize s wildcard routou), `AiServiceRequireUserKeyTest`
+  (striktní režim complete()/converse(), env fallback bez usera, default
+  beze změny) a `ChatRequireUserKeyTest` (HTTP vrstva — errors.api_key,
+  žádná prázdná konverzace, user klíč v hlavičce).
 
 ## [0.1.1] - 2026-07-17
 

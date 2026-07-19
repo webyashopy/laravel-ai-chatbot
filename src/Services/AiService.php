@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Throwable;
+use Webyashopy\Chatbot\Exceptions\MissingUserApiKeyException;
 use Webyashopy\Chatbot\Models\AiUsageLog;
 use Webyashopy\Chatbot\Models\UserAiSettings;
 use Webyashopy\Chatbot\Support\Purpose;
@@ -130,14 +131,49 @@ class AiService
     }
 
     /**
+     * Je zapnutý striktní režim per-user klíčů (`chatbot.api.require_user_key`)?
+     * Veřejné — controller i host si režim zjistí bez sahání na config balíčku.
+     */
+    public function requiresUserKey(): bool
+    {
+        return (bool) config('chatbot.api.require_user_key', false);
+    }
+
+    /**
+     * Má uživatel vlastní API klíč v `user_ai_settings`? Veřejné — controller
+     * (i host) přes něj uživatele bez klíče odmítne SROZUMITELNĚ ještě před
+     * voláním API, místo aby výjimka zapadla v obecném catch bloku.
+     */
+    public function userHasApiKey(mixed $user): bool
+    {
+        $userId = $this->userId($user);
+
+        if ($userId === null) {
+            return false;
+        }
+
+        $key = UserAiSettings::query()->where('user_id', $userId)->first()?->api_key;
+
+        return $key !== null && $key !== '';
+    }
+
+    /**
      * Resolution API klíče (ADR-015): per-user klíč z `user_ai_settings`
      * (dešifrovaný `encrypted` cast) → fallback na serverový klíč z configu
      * balíčku (`chatbot.api.key`, env `ANTHROPIC_API_KEY`).
+     *
+     * Striktní režim (`chatbot.api.require_user_key`): volání S uživatelem bez
+     * vlastního klíče se odmítne {@see MissingUserApiKeyException} — env klíč
+     * pak slouží jen voláním bez usera (systémová, např. `chatbot:models-check`).
+     * Výjimka letí PŘED rate limitem i logováním: žádné volání neproběhlo,
+     * nespotřebuje se pokus z bucketu ani nevznikne řádek v `ai_usage_logs`.
      *
      * Nastavení se hledá dotazem přes `user_id`, ne přes relaci na host User
      * modelu — balíček nesmí předpokládat, že host má relaci `aiSettings`.
      *
      * @return array{0:string, 1:string} [klíč, zdroj klíče ('user'|'env')]
+     *
+     * @throws MissingUserApiKeyException Striktní režim a uživatel nemá vlastní klíč.
      */
     protected function resolveApiKey(mixed $user): array
     {
@@ -149,6 +185,10 @@ class AiService
 
         if ($userApiKey !== null && $userApiKey !== '') {
             return [$userApiKey, 'user'];
+        }
+
+        if ($userId !== null && $this->requiresUserKey()) {
+            throw new MissingUserApiKeyException;
         }
 
         return [(string) config('chatbot.api.key'), 'env'];

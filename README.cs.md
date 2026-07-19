@@ -54,6 +54,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_API_URL=https://api.anthropic.com/v1
 ANTHROPIC_API_VERSION=2023-06-01
 CHATBOT_MODEL=claude-sonnet-4-5-20250929
+# striktní režim per-user klíčů — viz sekce „Per-user API klíče" níže
+CHATBOT_REQUIRE_USER_KEY=false
 ```
 
 ### 4) Vlastní autorizace (POVINNÉ pro aplikace s rolemi)
@@ -113,6 +115,7 @@ po balíčkovém, takže vlastní implementace vždy vyhraje nad defaultem
 | `routes.middleware` | `['web','auth']` | Middleware rout; host přidá své (`can:chat.use`) |
 | `routes.as` | `chat.` | Prefix názvů rout — **neměnit** (stojí na tom frontend) |
 | `api.key` / `api.url` / `api.version` | env | Anthropic API (env `ANTHROPIC_*`) |
+| `api.require_user_key` | `false` | Striktní režim: uživatel bez vlastního klíče chat nepoužije (env `CHATBOT_REQUIRE_USER_KEY`) |
 | `default_model` | `claude-sonnet-4-5-20250929` | Model nové konverzace (env `CHATBOT_MODEL`) |
 | `model` | `claude-sonnet-4-5-20250929` | Model pro jednorázové `complete()` |
 | `models` | 3 modely | Allowlist modelů pro chat; mimo něj → 422 |
@@ -130,6 +133,49 @@ po balíčkovém, takže vlastní implementace vždy vyhraje nad defaultem
 | `prompts.context` | `''` | Doménový kontext hosta (preambule je fixní v balíčku) |
 
 Config **neobsahuje closures** — je cacheovatelný přes `config:cache`.
+
+## Per-user API klíče a nastavení
+
+Každý uživatel si může uložit **vlastní Anthropic API klíč** — v DB leží
+zašifrovaný (`user_ai_settings.api_key`, `encrypted` cast) a do frontendu se
+nikdy neposílá (props nesou jen `has_api_key: bool`).
+
+Resolution klíče při volání API: **klíč uživatele → fallback na serverový
+`ANTHROPIC_API_KEY`**. Se zapnutým `api.require_user_key` fallback pro
+uživatelská volání odpadá — kdo nemá vlastní klíč, chat nepoužije
+(`store`/`message` vrátí 302 + `errors.api_key`; `AiService` vyhodí
+`Exceptions\MissingUserApiKeyException`). Volání **bez** usera (systémová,
+např. `chatbot:models-check`) jedou na serverový klíč vždy.
+
+### Routy nastavení
+
+| Metoda | URI | Název | Popis |
+|---|---|---|---|
+| GET | `chat/nastaveni` | `chat.settings.show` | Stav nastavení (`has_api_key`, `preferred_model`, `require_user_key`) |
+| PUT | `chat/nastaveni` | `chat.settings.update` | Uložení/přepsání klíče (`api_key`, min. 20 znaků) |
+| DELETE | `chat/nastaveni/klic` | `chat.settings.key.destroy` | Odstranění klíče (záznam s `preferred_model` zůstává) |
+
+Routy jedou přes touž bránu `ChatAuthorizer::canUseChat()` a middleware
+z `chatbot.routes.middleware` jako zbytek chatu; controller přepíšeš IoC
+bindingem (`ChatSettingsController`, array syntax rout).
+
+### Integrace v hostovi
+
+Balíček renderuje Inertia stránku **`chat/settings`** — komponentu dodává
+host (stejný vzor jako `chat/index`), např.
+`resources/js/pages/chat/settings.tsx` s props:
+
+```ts
+interface ChatSettingsProps {
+    has_api_key: boolean;          // klíč samotný se do FE nikdy neposílá
+    preferred_model: string | null;
+    require_user_key: boolean;     // true → bez klíče chat nejede, FE to vysvětlí
+}
+```
+
+Formulář posílá `PUT chat/nastaveni` s polem `api_key`, smazání
+`DELETE chat/nastaveni/klic`. Chybu chybějícího klíče při psaní do chatu
+najde FE v `errors.api_key` (store i message).
 
 ## Kontrakty
 
@@ -283,7 +329,10 @@ typu se ignoruje, prompt se kvůli configu hosta nikdy nerozbije.
 4. Žádný raw SQL — jen typované filtry přes Eloquent, limit 50 řádků.
 5. Tvrdý limit iterací smyčky.
 6. Bezpečnostní preambule promptu je fixní v balíčku.
-7. `user_ai_settings.api_key` je `encrypted`, do frontendu nikdy plaintext.
+7. `user_ai_settings.api_key` je `encrypted`, do frontendu nikdy plaintext —
+   nastavení posílá jen `has_api_key: bool` a klíč jde vždy jen směrem dovnitř.
+8. Se zapnutým `api.require_user_key` se uživatel bez vlastního klíče odmítne
+   PŘED voláním API (žádný tichý fallback na serverový klíč).
 
 ## Console command `chatbot:models-check`
 

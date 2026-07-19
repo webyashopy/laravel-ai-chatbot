@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Route;
 use Webyashopy\Chatbot\Http\Controllers\ChatController;
+use Webyashopy\Chatbot\Http\Controllers\ChatSettingsController;
 
 /*
  * Webové routy chatu. Načítá je ChatbotServiceProvider uvnitř skupiny
@@ -22,8 +23,16 @@ use Webyashopy\Chatbot\Http\Controllers\ChatController;
  */
 
 Route::get('/', [ChatController::class, 'index'])->name('index');
-Route::get('/{conversation}', [ChatController::class, 'show'])->name('show');
-Route::delete('/{conversation}', [ChatController::class, 'destroy'])->name('destroy');
+
+// Per-user nastavení AI (vlastní API klíč) — PŘED wildcard `/{conversation}`
+// a `whereNumber` níže, jinak by GET /chat/nastaveni spadl do `show`.
+// Nevolá Anthropic API → mimo `throttle:chat`.
+Route::get('/nastaveni', [ChatSettingsController::class, 'show'])->name('settings.show');
+Route::put('/nastaveni', [ChatSettingsController::class, 'update'])->name('settings.update');
+Route::delete('/nastaveni/klic', [ChatSettingsController::class, 'destroyKey'])->name('settings.key.destroy');
+
+Route::get('/{conversation}', [ChatController::class, 'show'])->whereNumber('conversation')->name('show');
+Route::delete('/{conversation}', [ChatController::class, 'destroy'])->whereNumber('conversation')->name('destroy');
 
 // Volání Anthropic API — pod rate limitem `chat` (registruje ChatbotServiceProvider
 // z `chatbot.rate.per_purpose.chat`).

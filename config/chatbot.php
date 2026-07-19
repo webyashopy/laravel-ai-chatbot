@@ -82,6 +82,13 @@ return [
         'key' => env('ANTHROPIC_API_KEY'),
         'url' => env('ANTHROPIC_API_URL', 'https://api.anthropic.com/v1'),
         'version' => env('ANTHROPIC_API_VERSION', '2023-06-01'),
+
+        // Striktní režim per-user klíčů: true = volání S uživatelem, který nemá
+        // vlastní klíč v `user_ai_settings`, se odmítne (MissingUserApiKeyException)
+        // — serverový klíč výše pak slouží JEN systémovým voláním bez usera
+        // (např. `chatbot:models-check`). Default false = dnešní chování
+        // (fallback user → env) kvůli zpětné kompatibilitě hostů.
+        'require_user_key' => (bool) env('CHATBOT_REQUIRE_USER_KEY', false),
     ],
 
     // Výchozí model nové konverzace (musí být v allowlistu 'models' níže).

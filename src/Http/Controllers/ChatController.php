@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 use Throwable;
@@ -78,6 +79,7 @@ class ChatController extends Controller
     public function store(Request $request): RedirectResponse
     {
         $this->ensureCanUseChat($request);
+        $this->ensureUserApiKeyIfRequired($request->user());
 
         $data = $request->validate([
             'model' => ['required', 'string'],
@@ -119,6 +121,7 @@ class ChatController extends Controller
     public function message(Request $request, ChatConversation $conversation): RedirectResponse
     {
         $this->ensureCanUseChat($request);
+        $this->ensureUserApiKeyIfRequired($request->user());
         Gate::authorize('update', $conversation);
 
         $data = $request->validate([
@@ -269,6 +272,27 @@ class ChatController extends Controller
     private function ensureCanUseChat(Request $request): void
     {
         abort_unless($this->authorizer->canUseChat($request->user()), 403, 'Nemáte přístup k chatu.');
+    }
+
+    /**
+     * Striktní režim per-user klíčů (`chatbot.api.require_user_key`): uživatel
+     * bez vlastního klíče se odmítne UŽ TADY — 302 + `errors.api_key` s výzvou
+     * k nastavení. Bez téhle brány by {@see Exceptions\MissingUserApiKeyException}
+     * z AiService zapadla v graceful catch větvích `exchange*()` (uložená
+     * zpráva bez odpovědi, žádné vysvětlení) a ve `store()` by navíc vznikla
+     * prázdná konverzace.
+     *
+     * Jen store()/message() — čtení historie ani potvrzení návrhu API nevolá.
+     */
+    private function ensureUserApiKeyIfRequired(mixed $user): void
+    {
+        if (! $this->aiService->requiresUserKey() || $this->aiService->userHasApiKey($user)) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'api_key' => 'Chat vyžaduje vlastní Anthropic API klíč. Nastavte si ho v nastavení chatu.',
+        ]);
     }
 
     /**
