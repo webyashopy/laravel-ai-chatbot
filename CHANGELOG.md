@@ -7,6 +7,10 @@ verzování dle [SemVer](https://semver.org/lang/cs/).
 
 ## [Nezveřejněno]
 
+Zatím nic.
+
+## [0.2.0] - 2026-07-19
+
 ### Přidáno
 - **Self-service nastavení per-user API klíče (`ChatSettingsController`).**
   Nové routy `chat.settings.show` (GET `chat/nastaveni`),
