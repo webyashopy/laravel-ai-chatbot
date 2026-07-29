@@ -20,6 +20,19 @@ final class Purpose
     public const CHAT = 'chat';
 
     /**
+     * Digitalizace dokumentu — extrakce strukturovaných dat z PDF/obrázku
+     * ({@see \Webyashopy\Chatbot\Services\DocumentExtractor}).
+     *
+     * Vlastní účel, ne sdílený s 'chat': jedno volání nad vícestránkovým PDF
+     * spotřebuje řádově víc tokenů než zpráva v chatu, takže by ukecaná
+     * digitalizace jinak vyčerpala limit chatu (a naopak).
+     *
+     * Doménový účel 'ocr' z host aplikací zůstává nedotčený — kdo si ho
+     * posílá sám, posílá ho dál.
+     */
+    public const DOCUMENT = 'document';
+
+    /**
      * Třída je jen jmenný prostor pro konstanty — instance nedávají smysl.
      */
     private function __construct() {}

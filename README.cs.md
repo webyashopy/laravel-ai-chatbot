@@ -111,6 +111,7 @@ po balíčkovém, takže vlastní implementace vždy vyhraje nad defaultem
 |---|---|---|
 | `user_model` | `App\Models\User` | Model uživatele hosta (env `CHATBOT_USER_MODEL`) |
 | `features.chat` | `true` | `false` = jen AI vrstva, bez chat rout a tool-loopu |
+| `features.documents` | `true` | `false` = vypne digitalizaci dokumentů (env `CHATBOT_FEATURE_DOCUMENTS`) |
 | `routes.prefix` | `chat` | Prefix rout balíčku (env `CHATBOT_ROUTE_PREFIX`) |
 | `routes.middleware` | `['web','auth']` | Middleware rout; host přidá své (`can:chat.use`) |
 | `routes.as` | `chat.` | Prefix názvů rout — **neměnit** (stojí na tom frontend) |
@@ -122,7 +123,7 @@ po balíčkovém, takže vlastní implementace vždy vyhraje nad defaultem
 | `pricing` | viz config | CZK / 1 Mtok (`input`/`output`) pro výpočet `cost`. **Models API cenu NEVRACÍ** — ceník je vždy ruční, aktualizuj dle ceníku Anthropic a kurzu CZK/USD (viz `chatbot:models-check` níže) |
 | `retry` | 3 / 1000 ms / ×2 | Retry a exponenciální backoff volání API |
 | `timeouts` | 60 / 10 s | HTTP `request` / `connect` timeout |
-| `rate.per_purpose` | `chat: 20`, `ocr: 10` | Limit volání/min na uživatele dle účelu |
+| `rate.per_purpose` | `chat: 20`, `ocr: 10`, `document: 10` | Limit volání/min na uživatele dle účelu |
 | `rate.default` | `10` | Fallback pro neznámý účel |
 | `chat.history_limit` | `20` | Kolik posledních zpráv jde do promptu |
 | `chat.tools.enabled` | `true` | Kill-switch nástrojů |
@@ -130,6 +131,7 @@ po balíčkovém, takže vlastní implementace vždy vyhraje nad defaultem
 | `chat.tools.capable_models` | 3 modely | Modely umějící tool-use; jinak fallback na text |
 | `tools.discover_paths` | `app/Services/Ai/Tools` | Kde se hledají `ChatTool` hosta |
 | `actions.discover_paths` | `app/Services/Ai/Actions` | Kde se hledají `ChatActionHandler` hosta |
+| `documents.*` | viz níže | Digitalizace dokumentů — model, limity, disk, discovery schémat |
 | `prompts.context` | `''` | Doménový kontext hosta (preambule je fixní v balíčku) |
 
 Config **neobsahuje closures** — je cacheovatelný přes `config:cache`.
@@ -184,6 +186,7 @@ najde FE v `errors.api_key` (store i message).
 | `Contracts\ChatAuthorizer` | Kdo smí chat / potvrdit akci | `Support\AllowAuthenticatedChatAuthorizer` |
 | `Contracts\ChatTool` | Nástroj nad daty hosta | — (dodává host) |
 | `Contracts\ChatActionHandler` | Potvrzení navrženého zápisu | — (dodává host) |
+| `Contracts\DocumentSchema` | Co vytáhnout z dokumentu | — (dodává host; předek `Support\BaseDocumentSchema`) |
 
 Bindingy jsou přes `bind()`, ne `singleton()` — host je snadno přepíše.
 
@@ -211,6 +214,7 @@ use Webyashopy\Chatbot\Chatbot;
 
 Chatbot::registerTool(ReadFakturyTool::class);
 Chatbot::registerActionHandler(PartnerActionHandler::class);
+Chatbot::registerDocumentSchema(FakturaSchema::class);
 ```
 
 Kill-switch `chat.tools.enabled = false` → registr nástrojů je prázdný
@@ -320,6 +324,150 @@ typu se ignoruje, prompt se kvůli configu hosta nikdy nerozbije.
 'prompts' => ['context' => 'Jsi asistent v logistickém systému Alewerans Logistics. …'],
 ```
 
+## Digitalizace dokumentů
+
+Extrakce strukturovaných dat z PDF a obrázků — typicky pro **předvyplnění
+formuláře** z nahrané faktury, dodacího listu nebo dokladu. Balíček dodává
+vrstvu, host popisuje **co** se má z dokumentu vytáhnout.
+
+Vypíná se feature flagem `chatbot.features.documents`
+(env `CHATBOT_FEATURE_DOCUMENTS=false`) — registr schémat pak vrací prázdno.
+
+### 1) Napiš schéma
+
+Schéma je třída implementující `Contracts\DocumentSchema`; nejpohodlnější je
+podědit `Support\BaseDocumentSchema` a doplnit jen tři metody. Uloží se do
+`app/Services/Ai/Documents/` (cesta z `chatbot.documents.schemas.discover_paths`)
+a **nikde se neregistruje** — najde ji self-discovery.
+
+```php
+namespace App\Services\Ai\Documents;
+
+use Webyashopy\Chatbot\Support\BaseDocumentSchema;
+
+final class FakturaSchema extends BaseDocumentSchema
+{
+    public function name(): string
+    {
+        return 'faktura';
+    }
+
+    public function description(): string
+    {
+        return 'Přijatá faktura od dodavatele.';
+    }
+
+    public function jsonSchema(): array
+    {
+        return [
+            'type' => 'object',
+            'properties' => [
+                'cislo' => ['type' => 'string', 'description' => 'Číslo faktury'],
+                'ico_dodavatele' => ['type' => ['string', 'null'], 'description' => 'IČO, 8 číslic'],
+                'datum_splatnosti' => ['type' => ['string', 'null'], 'format' => 'date'],
+                'castka_bez_dph' => ['type' => 'number'],
+            ],
+        ];
+    }
+
+    public function instructions(): string
+    {
+        return 'Částky vracej jako číslo bez měny. Datumy ve formátu RRRR-MM-DD.';
+    }
+
+    // Volitelně: postprocessing (normalizace IČO, dopočet DPH…).
+    public function transform(array $data): array
+    {
+        return $data;
+    }
+}
+```
+
+**Omezení JSON Schema** (Anthropic structured outputs): nepodporuje rekurzivní
+schémata, `minimum`/`maximum`, `minLength`/`maxLength` ani `additionalProperties`
+s jinou hodnotou než `false`. Rozsahy validuj v `transform()` nebo ve validaci
+hosta, ne ve schématu.
+
+**Nepovinný údaj** se zapisuje jako **nullable typ** (`['string', 'null']`), ne
+vynecháním z `required`. Balíček doplní `additionalProperties: false` všem
+objektům a — když `required` neuvedeš vůbec — vyplní ho všemi vlastnostmi.
+
+### 2) Zavolej digitalizaci
+
+```php
+use Webyashopy\Chatbot\Facades\Documents;
+
+$result = Documents::digitize($request->file('soubor'), 'faktura', $request->user());
+
+return back()->with('predvyplneno', $result->data());
+// ['cislo' => 'FV2026001', 'ico_dodavatele' => '12345678',
+//  'datum_splatnosti' => '2026-08-15', 'castka_bez_dph' => 12500.0]
+```
+
+Když chceš krok uložení a extrakce oddělit (např. nahrát teď, vytěžit ve frontě):
+
+```php
+$document = Documents::store($request->file('soubor'), $request->user());
+$result   = Documents::extract($document, 'faktura', $request->user());
+```
+
+| Metoda | Co dělá |
+|---|---|
+| `store($file, $user)` | Ověří a uloží soubor, vrátí `ChatDocument` |
+| `extract($document, $schema, $user, $force, $options)` | Vytěží data, vrátí `ExtractionResult` |
+| `digitize($file, $schema, $user, …)` | `store()` + `extract()` v jednom |
+| `delete($document)` | Smaže záznam i soubor (pro retenční úlohy) |
+| `schemas()` | Registr schémat — `options()` dá mapu pro select v UI |
+
+`ExtractionResult` nabízí `data()`, `get('klic.0.podklic')`, `model()`, `usage()`,
+`cost()`, `wasCached()` a `extractionId()`.
+
+### Náklady a znovupoužití
+
+Poslední **úspěšná** extrakce dvojice (dokument, schéma) se vrací z DB **bez
+volání API** — opakované otevření formuláře nad stejnou fakturou tedy nestojí
+nic (`$result->wasCached() === true`). Nové volání si vynutíš `force: true`,
+typicky po opravě schématu:
+
+```php
+$result = Documents::extract($document, 'faktura', $user, force: true);
+```
+
+Stejný soubor od téhož uživatele se neukládá dvakrát — deduplikace jde přes
+SHA-256 obsahu, takže druhá nahrávka rovnou zdědí hotové extrakce.
+
+Neúspěšné pokusy se ukládají také (`status = 'failed'` + `error`): volání
+proběhlo a zaplatilo se, takže po něm musí zůstat stopa.
+
+### Model a limity
+
+| Klíč | Default | Poznámka |
+|---|---|---|
+| `documents.model` | `claude-sonnet-5` | Samostatný env `CHATBOT_DOCUMENT_MODEL`. Sonnet 5 má 1M kontext a zvládne PDF do 600 stran; haiku jen 200k a 100 stran |
+| `documents.max_tokens` | `8192` | Dlouhý ceník se do menšího stropu nevejde a JSON se usekne |
+| `documents.max_size_mb` | `20` | Anthropic má strop 32 MB na request a base64 obsah nafoukne ~1,37× |
+| `documents.max_pages` | `200` | Brzda nákladů, ne technický strop |
+| `documents.disk` / `.path` | `local` / `chatbot/documents` | **Musí být privátní disk** — doklady nepatří pod `public` |
+| `rate.per_purpose.document` | `10`/min | Vlastní bucket, odděleně od chatu |
+
+### Chybové stavy
+
+| Výjimka | Kdy |
+|---|---|
+| `UnsupportedDocumentException` | Typ souboru mimo `allowed_mime` (MIME se čte z **obsahu**, ne z přípony), nečitelný soubor, poškozené PDF |
+| `DocumentTooLargeException` | Přes limit velikosti nebo počtu stran |
+| `UnknownDocumentSchemaException` | Schéma není registrované, nebo je vypnutá feature |
+| `ExtractionFailedException` | Odpověď nejde použít — neplatný JSON, useknuto limitem `max_tokens`, odmítnuto modelem |
+
+### Co balíček záměrně nedělá
+
+- **Citace** (odkaz „tato částka je na straně 3") — Anthropic je nekombinuje
+  se strukturovaným výstupem (vrací 400) a vynucené schéma je pro vyplňování
+  formulářů podstatnější.
+- **Mapování na doménové modely** — `ExtractionResult::data()` je obyčejné pole,
+  co s ním, si řídí host (ADR-019 §6).
+- **UI** — upload formulář a náhled dat patří do hosta, stejně jako u chatu.
+
 ## Bezpečnostní invarianty
 
 1. Každý tool handler se re-autorizuje pod přihlášeným uživatelem.
@@ -333,6 +481,15 @@ typu se ignoruje, prompt se kvůli configu hosta nikdy nerozbije.
    nastavení posílá jen `has_api_key: bool` a klíč jde vždy jen směrem dovnitř.
 8. Se zapnutým `api.require_user_key` se uživatel bez vlastního klíče odmítne
    PŘED voláním API (žádný tichý fallback na serverový klíč).
+9. Typ nahraného dokumentu se určuje z **obsahu** souboru (finfo), nikdy
+   z přípony ani z hlavičky od klienta.
+10. Text uvnitř dokumentu je pro model vždy **data**, nikdy instrukce —
+    systémový prompt extrakce je fixní v balíčku a obsahuje ochranu proti
+    prompt injection (naskenovaná faktura může obsahovat „ignoruj předchozí
+    pokyny").
+11. Překročení limitu velikosti nebo počtu stran je **výjimka, ne tiché
+    oříznutí** — oříznutá faktura by se extrahovala „úspěšně" a chybějící
+    položky by nikdo nepoznal.
 
 ## Console command `chatbot:models-check`
 

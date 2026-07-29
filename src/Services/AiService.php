@@ -47,10 +47,14 @@ class AiService
      * Provede dokončení promptu, volitelně s obrázky (multimodal vision).
      *
      * @param  string|array<int,array<string,mixed>>|null  $systemPrompt
-     * @param  array<string,mixed>  $options  Podporuje klíč `images` (base64 PNG/JPEG stránky,
-     *                                        vision vstup; prázdné/chybějící = text-only) a kontext
-     *                                        pro usage log: `user` (mixed), `purpose` (string,
-     *                                        default `chat`), `model` (override, default
+     * @param  array<string,mixed>  $options  Podporuje klíče:
+     *                                        `images` (base64 PNG/JPEG/WebP/GIF, vision vstup),
+     *                                        `documents` (PDF jako `document` bloky — viz
+     *                                        {@see buildDocumentBlock()}), `output_config`
+     *                                        (structured outputs, `format`/`effort`),
+     *                                        prázdné/chybějící = text-only.
+     *                                        Kontext pro usage log: `user` (mixed), `purpose`
+     *                                        (string, default `chat`), `model` (override, default
      *                                        `config('chatbot.model')`), `conversation_id` (?int).
      * @return array{content:string, usage:array<string,mixed>, model:string, stop_reason:?string}
      *
@@ -59,7 +63,8 @@ class AiService
     public function complete(string $prompt, string|array|null $systemPrompt = null, array $options = []): array
     {
         $images = $options['images'] ?? [];
-        unset($options['images']);
+        $documents = $options['documents'] ?? [];
+        unset($options['images'], $options['documents']);
 
         $user = $options['user'] ?? null;
         $purpose = (string) ($options['purpose'] ?? Purpose::CHAT);
@@ -72,7 +77,11 @@ class AiService
         try {
             $this->checkRateLimit($purpose, $user);
 
-            $messages = $this->buildMessages($prompt, is_array($images) ? $images : []);
+            $messages = $this->buildMessages(
+                $prompt,
+                is_array($images) ? $images : [],
+                is_array($documents) ? $documents : [],
+            );
             $response = $this->sendRequest($messages, $systemPrompt, $options, $apiKey, $model);
         } catch (Throwable $e) {
             $this->logUsage($user, $model, $purpose, [], $keySource, false, $e->getMessage(), $conversationId);
@@ -268,18 +277,25 @@ class AiService
     /**
      * Sestaví `messages` pole pro Anthropic API — text-only nebo multimodal.
      *
-     * Multimodal: image bloky NEJDŘÍV, pak text (Anthropic best practice).
+     * Pořadí bloků: document → image → text (Anthropic best practice —
+     * příloha nejdřív, pokyn nakonec).
      *
      * @param  array<int,string>  $images
+     * @param  array<int,string|array<string,mixed>>  $documents
      * @return array<int,array<string,mixed>>
      */
-    protected function buildMessages(string $prompt, array $images = []): array
+    protected function buildMessages(string $prompt, array $images = [], array $documents = []): array
     {
-        if ($images === []) {
+        if ($images === [] && $documents === []) {
             return [['role' => 'user', 'content' => $prompt]];
         }
 
         $content = [];
+
+        foreach ($documents as $document) {
+            $content[] = $this->buildDocumentBlock($document);
+        }
+
         foreach ($images as $b64) {
             $content[] = [
                 'type' => 'image',
@@ -292,7 +308,51 @@ class AiService
     }
 
     /**
-     * Detekuje MIME obrázku z magic bytes base64 stringu (PNG/JPEG).
+     * Blok `document` pro Anthropic API (nativní čtení PDF, bez beta hlavičky).
+     *
+     * Vstup je buď base64 string (bere se jako PDF), nebo pole:
+     *  - `data` (base64) — povinné,
+     *  - `media_type` — `application/pdf` (default) nebo `text/plain`,
+     *  - `title` / `context` — volitelné, pomáhají modelu se zorientovat
+     *    ve víc přílohách naráz.
+     *
+     * `text/plain` dokument se posílá se `source.type = text`, kde API čeká
+     * ČISTÝ text, ne base64 — proto se dekóduje zpět.
+     *
+     * @param  string|array<string,mixed>  $document
+     * @return array<string,mixed>
+     */
+    protected function buildDocumentBlock(string|array $document): array
+    {
+        $data = is_string($document) ? $document : (string) ($document['data'] ?? '');
+        $mediaType = is_string($document)
+            ? 'application/pdf'
+            : (string) ($document['media_type'] ?? 'application/pdf');
+
+        $block = [
+            'type' => 'document',
+            'source' => $mediaType === 'text/plain'
+                ? ['type' => 'text', 'media_type' => 'text/plain', 'data' => (string) base64_decode($data, true)]
+                : ['type' => 'base64', 'media_type' => $mediaType, 'data' => $data],
+        ];
+
+        foreach (['title', 'context'] as $key) {
+            $value = is_array($document) ? ($document[$key] ?? null) : null;
+
+            if (is_string($value) && $value !== '') {
+                $block[$key] = $value;
+            }
+        }
+
+        return $block;
+    }
+
+    /**
+     * Detekuje MIME obrázku z magic bytes base64 stringu
+     * (PNG / JPEG / GIF / WebP; neznámé → PNG).
+     *
+     * Dekóduje se 16 base64 znaků = 12 bajtů — přesně tolik, kolik je
+     * potřeba na WebP, kde je značka `WEBP` až na offsetu 8.
      */
     protected function detectImageMediaType(string $b64): string
     {
@@ -303,6 +363,14 @@ class AiService
 
         if (str_starts_with($header, "\xFF\xD8\xFF")) {
             return 'image/jpeg';
+        }
+
+        if (str_starts_with($header, 'GIF8')) {
+            return 'image/gif';
+        }
+
+        if (str_starts_with($header, 'RIFF') && substr($header, 8, 4) === 'WEBP') {
+            return 'image/webp';
         }
 
         return 'image/png';
@@ -476,6 +544,13 @@ class AiService
         // options tento klíč nikdy neobsahují.
         if (! empty($options['tools'])) {
             $body['tools'] = $options['tools'];
+        }
+
+        // `output_config` — structured outputs (`format` s JSON Schema) a `effort`.
+        // Nastavuje ho digitalizace dokumentů, aby API VYNUTILO tvar odpovědi
+        // místo prosby v promptu (viz DocumentExtractor).
+        if (! empty($options['output_config'])) {
+            $body['output_config'] = $options['output_config'];
         }
 
         return $body;

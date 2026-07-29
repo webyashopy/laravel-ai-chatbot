@@ -7,7 +7,72 @@ verzování dle [SemVer](https://semver.org/lang/cs/).
 
 ## [Nezveřejněno]
 
-Zatím nic.
+### Přidáno
+- **Digitalizace dokumentů — extrakce strukturovaných dat z PDF a obrázků**
+  (předvyplnění formulářů, evidence dokladů). Vstupní bod je
+  `Services\DocumentService` (`store()` / `extract()` / `digitize()` / `delete()`),
+  případně fasáda `Facades\Documents`. Vrací `Support\ExtractionResult` —
+  asociativní pole podle schématu, připravené k `$request->merge()` nebo
+  `fill()` modelu. Mapování na doménu zůstává v hostovi (ADR-019 §6).
+- **Kontrakt `Contracts\DocumentSchema`** (+ pohodlný předek
+  `Support\BaseDocumentSchema`) — host jím popisuje, co z dokumentu vytáhnout:
+  `jsonSchema()` pro strukturovaný výstup, `instructions()` pro upřesnění
+  a `transform()` pro postprocessing. Registrace přes self-discovery nad
+  `chatbot.documents.schemas.discover_paths` (`Services\DocumentSchemaRegistry`),
+  nebo explicitně `Chatbot::registerDocumentSchema()` — stejná mechanika jako
+  u `ChatTool` a `ChatActionHandler`, přidání typu dokumentu tedy needituje
+  žádný sdílený soubor.
+- **`Services\DocumentExtractor`** — sestaví prompt ze schématu a pošle dokument
+  do API se `output_config.format` (JSON Schema), takže tvar odpovědi API
+  VYNUTÍ místo prosby v promptu. Schéma se před odesláním normalizuje:
+  doplní se `additionalProperties: false` všem objektům (rekurzivně, včetně
+  `items`) a chybějící `required` se vyplní všemi vlastnostmi.
+  Systémový prompt je FIXNÍ a obsahuje ochranu proti prompt injection —
+  text uvnitř dokumentu je vždy DATA, nikdy instrukce.
+- **Tabulky `chat_documents` a `document_extractions`** + modely
+  `Models\ChatDocument` a `Models\DocumentExtraction`. Poslední ÚSPĚŠNÁ
+  extrakce dvojice (dokument, schéma) se vrací bez volání API
+  (`ExtractionResult::wasCached()`), opakované otevření formuláře nad stejnou
+  fakturou tedy nestojí nic; `force: true` si vynutí nové volání. Neúspěšné
+  pokusy se ukládají také (`status = 'failed'` + `error`) — volání proběhlo
+  a zaplatilo se, musí po něm zůstat stopa.
+- **Konfigurační blok `chatbot.documents`** — `model`
+  (env `CHATBOT_DOCUMENT_MODEL`, default `claude-sonnet-5`; samostatný od
+  `chatbot.model` i `chatbot.default_model`), `max_tokens`, `disk`, `path`,
+  `max_size_mb` (20 — Anthropic má strop 32 MB na request a base64 obsah
+  nafoukne ~1,37×), `max_pages` (200), `allowed_mime` a `schemas.discover_paths`.
+  Nový feature flag `chatbot.features.documents` (env `CHATBOT_FEATURE_DOCUMENTS`)
+  a rate limit `chatbot.rate.per_purpose.document` (env `CHATBOT_RATE_DOCUMENT`).
+- **`Support\Purpose::DOCUMENT`** (`'document'`) — vlastní účel pro usage log
+  i rate limit. Jedno volání nad vícestránkovým PDF spotřebuje řádově víc
+  tokenů než zpráva v chatu, sdílený bucket by se choval nepředvídatelně.
+  Doménový účel `'ocr'` z host aplikací zůstává nedotčený.
+- **`Support\PdfInspector`** — počet stran PDF bez externí závislosti
+  (žádný `smalot/pdfparser` ani systémový `pdfinfo`): primárně `/Count`
+  u `/Type /Pages`, fallback počet objektů `/Type /Page`.
+- Testy: `DocumentStoreTest` (validace typu z obsahu, limity, deduplikace),
+  `DocumentExtractionTest` (tvar requestu, normalizace schématu, znovupoužití,
+  chybové stop_reason) a `DocumentSchemaRegistryTest` (discovery, explicitní
+  registrace, kill-switch).
+
+### Změněno
+- **`AiService::complete()` umí `documents`** — PDF se posílá jako nativní
+  `document` blok (base64, bez beta hlavičky), volitelně s `title`/`context`;
+  podporuje se i `text/plain` se `source.type = text`. Pořadí bloků ve zprávě
+  je `document` → `image` → `text`.
+- **`AiService` propouští `output_config`** do těla requestu (structured
+  outputs a `effort`).
+- `AiService::detectImageMediaType()` rozpozná navíc GIF a WebP (dosud jen
+  PNG/JPEG, vše ostatní padalo na PNG).
+
+### Poznámky
+- Citace (`citations`) se ZÁMĚRNĚ nepoužívají — daly by odkaz „tato hodnota je
+  na straně 3", ale Anthropic je s `output_config.format` nekombinuje (vrací
+  400). Pro vyplňování formulářů je podstatnější vynucené schéma.
+- Limit počtu stran se NEVYNUCUJE u PDF, kde počet stran nejde zjistit
+  (komprimované object streamy PDF 1.5+); tam platí jen limit velikosti
+  souboru. Odmítat taková PDF by znamenalo odmítat legitimní dokumenty kvůli
+  heuristice.
 
 ## [0.2.0] - 2026-07-19
 

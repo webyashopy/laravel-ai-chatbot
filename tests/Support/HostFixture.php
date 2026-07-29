@@ -129,6 +129,39 @@ final class HostFixture
     }
 
     /**
+     * Zapíše třídu schématu dokumentu ({@see \Webyashopy\Chatbot\Contracts\DocumentSchema}).
+     *
+     * @return class-string
+     */
+    public function writeDocumentSchema(string $className, string $schemaName): string
+    {
+        return $this->writeClass($className, fn (string $short): string => <<<PHP
+                use Webyashopy\\Chatbot\\Support\\BaseDocumentSchema;
+
+                class {$short} extends BaseDocumentSchema
+                {
+                    public function name(): string
+                    {
+                        return '{$schemaName}';
+                    }
+
+                    public function description(): string
+                    {
+                        return 'Testovací schéma.';
+                    }
+
+                    public function jsonSchema(): array
+                    {
+                        return [
+                            'type' => 'object',
+                            'properties' => ['cislo' => ['type' => 'string']],
+                        ];
+                    }
+                }
+                PHP);
+    }
+
+    /**
      * Zapíše libovolný soubor (např. třídu, která kontrakt neimplementuje).
      */
     public function writeRaw(string $relativePath, string $contents): void

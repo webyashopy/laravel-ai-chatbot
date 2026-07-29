@@ -44,10 +44,14 @@ return [
     |
     |  - chat: false = jen AI vrstva (klient + usage logging + per-user klíče);
     |    chat routy, modely konverzací a tool-loop se neregistrují (ADR-019 §9).
+    |  - documents: false = registr schémat extrakce vrací prázdno, takže
+    |    každá digitalizace skončí UnknownDocumentSchemaException. Migrace
+    |    tabulek běží tak jako tak (schéma DB nesmí záviset na přepínači).
     |
     */
     'features' => [
         'chat' => (bool) env('CHATBOT_FEATURE_CHAT', true),
+        'documents' => (bool) env('CHATBOT_FEATURE_DOCUMENTS', true),
     ],
 
     /*
@@ -160,6 +164,11 @@ return [
         'per_purpose' => [
             'chat' => (int) env('CHATBOT_RATE_CHAT', 20),
             'ocr' => (int) env('CHATBOT_RATE_OCR', 10),
+
+            // Digitalizace dokumentů (Support\Purpose::DOCUMENT). Vlastní bucket:
+            // jedno volání nad vícestránkovým PDF spotřebuje řádově víc tokenů
+            // než zpráva v chatu, sdílený limit by se choval nepředvídatelně.
+            'document' => (int) env('CHATBOT_RATE_DOCUMENT', 10),
         ],
         'default' => (int) env('CHATBOT_RATE_DEFAULT', 10),
 
@@ -197,6 +206,60 @@ return [
                 'claude-haiku-4-5',
                 'claude-opus-4-8',
             ],
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Digitalizace dokumentů
+    |--------------------------------------------------------------------------
+    |
+    | Extrakce strukturovaných dat z PDF a obrázků (předvyplnění formulářů,
+    | evidence dokladů). Schémata („co z dokumentu vytáhnout") dodává HOST
+    | jako třídy implementující Contracts\DocumentSchema — balíček doménu
+    | nezná (ADR-019 §6).
+    |
+    */
+    'documents' => [
+        // Výchozí model extrakce — SAMOSTATNÝ od 'model' (complete()) i
+        // 'default_model' (chat). Sonnet 5 má 1M kontext a zvládne PDF až
+        // 600 stran; haiku má jen 200k a strop 100 stran, u tabulek a
+        // skenů je znatelně méně přesný. Volající smí model přepsat
+        // per-volání přes options['model'].
+        'model' => env('CHATBOT_DOCUMENT_MODEL', 'claude-sonnet-5'),
+
+        // Strop odpovědi. Dlouhý ceník s desítkami položek se do 8k tokenů
+        // nevejde a JSON se usekne (ExtractionFailedException::truncated).
+        'max_tokens' => (int) env('CHATBOT_DOCUMENT_MAX_TOKENS', 8192),
+
+        // Disk pro uložené soubory. MUSÍ být privátní — doklady s rodným
+        // číslem nebo bankovním spojením nepatří pod 'public'.
+        'disk' => env('CHATBOT_DOCUMENT_DISK', 'local'),
+        'path' => env('CHATBOT_DOCUMENT_PATH', 'chatbot/documents'),
+
+        // Limit velikosti nahrávky v MB. POZOR na volbu čísla: Anthropic má
+        // strop 32 MB na CELÝ request a soubor se do něj posílá v base64,
+        // což ho nafoukne ~1,37x. 20 MB souboru = ~27 MB base64 + prompt,
+        // tedy ještě s rezervou. Vyšší hodnota začne padat na 413 z API.
+        'max_size_mb' => (int) env('CHATBOT_DOCUMENT_MAX_SIZE_MB', 20),
+
+        // Limit počtu stran PDF (Sonnet 5 by zvládl 600) — brzda nákladů,
+        // ne technický strop. Nevynucuje se u PDF, kde počet stran nejde
+        // zjistit (komprimované object streamy); tam platí jen limit velikosti.
+        'max_pages' => (int) env('CHATBOT_DOCUMENT_MAX_PAGES', 200),
+
+        // Povolené typy — ověřují se z OBSAHU souboru (finfo), ne z přípony.
+        'allowed_mime' => [
+            'application/pdf',
+            'image/png',
+            'image/jpeg',
+            'image/webp',
+            'image/gif',
+        ],
+
+        // Discovery schémat v HOST aplikaci (ne ve vendor/).
+        'schemas' => [
+            'discover_paths' => [app_path('Services/Ai/Documents')],
         ],
     ],
 

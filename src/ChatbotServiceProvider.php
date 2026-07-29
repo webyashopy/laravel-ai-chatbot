@@ -18,6 +18,7 @@ use Webyashopy\Chatbot\Models\ChatConversation;
 use Webyashopy\Chatbot\Policies\ChatConversationPolicy;
 use Webyashopy\Chatbot\Services\ChatActionHandlerRegistry;
 use Webyashopy\Chatbot\Services\ChatToolRegistry;
+use Webyashopy\Chatbot\Services\DocumentSchemaRegistry;
 use Webyashopy\Chatbot\Support\AllowAuthenticatedChatAuthorizer;
 
 /**
@@ -28,7 +29,8 @@ use Webyashopy\Chatbot\Support\AllowAuthenticatedChatAuthorizer;
  * Config `config/chatbot.php` (`hasConfigFile`) — publikovatelný do hosta.
  *
  * Migrace balíčku (`discoversMigrations` + `runsMigrations`) — `ai_usage_logs`,
- * `user_ai_settings`, `chat_conversations`, `chat_messages` a doplnění FK
+ * `user_ai_settings`, `chat_conversations`, `chat_messages`, `chat_documents`,
+ * `document_extractions` a doplnění FK
  * `ai_usage_logs.conversation_id`. Každá je idempotentní přes `Schema::hasTable`
  * (ADR-019 §8): v hostovi, kde tabulka už existuje s produkčními daty, proběhne
  * jako no-op.
@@ -78,6 +80,7 @@ class ChatbotServiceProvider extends PackageServiceProvider
 
         $this->app->singleton(ChatToolRegistry::class);
         $this->app->singleton(ChatActionHandlerRegistry::class);
+        $this->app->singleton(DocumentSchemaRegistry::class);
     }
 
     /**

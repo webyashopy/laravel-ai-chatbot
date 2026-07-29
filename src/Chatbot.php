@@ -7,17 +7,20 @@ namespace Webyashopy\Chatbot;
 use InvalidArgumentException;
 use Webyashopy\Chatbot\Contracts\ChatActionHandler;
 use Webyashopy\Chatbot\Contracts\ChatTool;
+use Webyashopy\Chatbot\Contracts\DocumentSchema;
 
 /**
- * Statický registr nástrojů a action handlerů balíčku.
+ * Statický registr nástrojů, action handlerů a schémat dokumentů.
  *
  * Primární cestou registrace je discovery nad adresáři host aplikace
- * (`chatbot.tools.discover_paths` / `chatbot.actions.discover_paths`) —
- * to řeší TASK-093. Tento registr je explicitní API pro okrajové případy,
- * kdy třída leží mimo prohledávané cesty:
+ * (`chatbot.tools.discover_paths` / `chatbot.actions.discover_paths` /
+ * `chatbot.documents.schemas.discover_paths`) — to řeší TASK-093. Tento
+ * registr je explicitní API pro okrajové případy, kdy třída leží mimo
+ * prohledávané cesty:
  *
  *     Chatbot::registerTool(ReadFakturyTool::class);
  *     Chatbot::registerActionHandler(PartnerActionHandler::class);
+ *     Chatbot::registerDocumentSchema(FakturaSchema::class);
  *
  * Ukládají se pouze názvy tříd (class-string), ne instance — instanciaci
  * a resolve závislostí provede až konzument přes kontejner.
@@ -37,6 +40,13 @@ final class Chatbot
      * @var array<int, class-string<ChatActionHandler>>
      */
     private static array $actionHandlers = [];
+
+    /**
+     * Ručně registrovaná schémata extrakce dokumentů.
+     *
+     * @var array<int, class-string<DocumentSchema>>
+     */
+    private static array $documentSchemas = [];
 
     /**
      * Třída je jen statický registr — instance nedávají smysl.
@@ -79,6 +89,22 @@ final class Chatbot
     }
 
     /**
+     * Zaregistruje schéma extrakce dokumentu ({@see DocumentSchema}).
+     *
+     * @param  class-string<DocumentSchema>  $schema
+     *
+     * @throws InvalidArgumentException Pokud třída kontrakt neimplementuje.
+     */
+    public static function registerDocumentSchema(string $schema): void
+    {
+        self::guardImplements($schema, DocumentSchema::class);
+
+        if (! in_array($schema, self::$documentSchemas, true)) {
+            self::$documentSchemas[] = $schema;
+        }
+    }
+
+    /**
      * Ručně registrované nástroje.
      *
      * @return array<int, class-string<ChatTool>>
@@ -86,6 +112,16 @@ final class Chatbot
     public static function registeredTools(): array
     {
         return self::$tools;
+    }
+
+    /**
+     * Ručně registrovaná schémata extrakce dokumentů.
+     *
+     * @return array<int, class-string<DocumentSchema>>
+     */
+    public static function registeredDocumentSchemas(): array
+    {
+        return self::$documentSchemas;
     }
 
     /**
@@ -105,6 +141,7 @@ final class Chatbot
     {
         self::$tools = [];
         self::$actionHandlers = [];
+        self::$documentSchemas = [];
     }
 
     /**
