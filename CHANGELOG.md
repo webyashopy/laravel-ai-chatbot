@@ -74,6 +74,27 @@ verzování dle [SemVer](https://semver.org/lang/cs/).
   souboru. Odmítat taková PDF by znamenalo odmítat legitimní dokumenty kvůli
   heuristice.
 
+## [0.3.0] - 2026-08-03
+
+### Přidáno
+- **Šifrování zpráv chatu (TASK-AIBOT-01g, config toggle
+  `chatbot.encrypt_messages`, default `false`).** Podmínka produkčního
+  nasazení chatu v hostech, kteří do promptu/odpovědí pouštějí zvláštní
+  kategorie osobních údajů (GDPR čl. 9) — `Models\ChatMessage::casts()`
+  přepíná `content` na `encrypted` a `action`/`steps` na
+  `encrypted:array` (precedent `Models\UserAiSettings` `api_key =>
+  encrypted`). Nová migrace mění `chat_messages.action`/`steps` z `json`
+  na `text` (PostgreSQL `json` sloupec ciphertext string nepřijme;
+  no-op na SQLite a záměrně no-op na MySQL). `ChatController` při
+  zapnutém přepínači neplní `chat_conversations.title` z textu
+  uživatele (generický titulek s datem místo plaintext leaku prvního
+  dotazu — `title` zůstává plaintext sloupec, šifrování by přeteklo
+  `varchar(255)`). Testy `ChatEncryptionTest` (toggle off beze změny,
+  toggle on ciphertext v DB + roundtrip + confirmAction flow +
+  titulek bez leaku). Detail a dopady (fulltext přestane fungovat,
+  `APP_KEY` musí zůstat stabilní, žádný auto-backfill starých dat) v
+  README.cs.md sekci „Šifrování zpráv".
+
 ## [0.2.0] - 2026-07-19
 
 ### Přidáno

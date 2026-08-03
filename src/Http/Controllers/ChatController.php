@@ -90,7 +90,7 @@ class ChatController extends Controller
 
         $conversation = ChatConversation::create([
             'user_id' => $request->user()->getKey(),
-            'title' => Str::limit($data['message'], 60),
+            'title' => $this->initialTitle($data['message']),
             'model' => $data['model'],
         ]);
 
@@ -293,6 +293,23 @@ class ChatController extends Controller
         throw ValidationException::withMessages([
             'api_key' => 'Chat vyžaduje vlastní Anthropic API klíč. Nastavte si ho v nastavení chatu.',
         ]);
+    }
+
+    /**
+     * Titulek nové konverzace (`chat_conversations.title`, plaintext sloupec —
+     * ADR-095 §6). Za normálních okolností se plní prvními slovy dotazu
+     * uživatele, ale se zapnutým `chatbot.encrypt_messages` (TASK-AIBOT-01g)
+     * by to znamenalo plaintext leak zdravotních/PII údajů z `content`
+     * (ten sloupec je šifrovaný, `title` NENÍ) — proto generický titulek
+     * s datem založení místo textu dotazu.
+     */
+    private function initialTitle(string $message): string
+    {
+        if ((bool) config('chatbot.encrypt_messages', false)) {
+            return 'Konverzace '.now()->format('d.m.Y');
+        }
+
+        return Str::limit($message, 60);
     }
 
     /**

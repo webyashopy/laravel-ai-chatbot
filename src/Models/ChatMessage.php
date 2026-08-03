@@ -48,14 +48,26 @@ class ChatMessage extends Model
     ];
 
     /**
+     * `content`/`action`/`steps` můžou nést zdravotní/PII data hosta
+     * (GDPR čl. 9) — s `chatbot.encrypt_messages` (TASK-AIBOT-01g, default
+     * `false`) se ukládají šifrovaně (`encrypted` / `encrypted:array`,
+     * precedent {@see UserAiSettings} `api_key => encrypted`). Vyžaduje
+     * migraci `action`/`steps` z `json` na `text` (viz
+     * `database/migrations/*_change_chat_messages_action_steps_to_text.php`)
+     * — `encrypted:array` ukládá base64 ciphertext string, který PostgreSQL
+     * `json` sloupec odmítne.
+     *
      * @return array<string, string>
      */
     protected function casts(): array
     {
+        $encrypt = (bool) config('chatbot.encrypt_messages', false);
+
         return [
             'role' => ChatRole::class,
-            'action' => 'array',
-            'steps' => 'array',
+            'content' => $encrypt ? 'encrypted' : 'string',
+            'action' => $encrypt ? 'encrypted:array' : 'array',
+            'steps' => $encrypt ? 'encrypted:array' : 'array',
         ];
     }
 

@@ -112,6 +112,7 @@ po balíčkovém, takže vlastní implementace vždy vyhraje nad defaultem
 | `user_model` | `App\Models\User` | Model uživatele hosta (env `CHATBOT_USER_MODEL`) |
 | `features.chat` | `true` | `false` = jen AI vrstva, bez chat rout a tool-loopu |
 | `features.documents` | `true` | `false` = vypne digitalizaci dokumentů (env `CHATBOT_FEATURE_DOCUMENTS`) |
+| `encrypt_messages` | `false` | Šifrování `content`/`action`/`steps` (`encrypted` casty) — viz sekce „Šifrování zpráv" níže (env `CHATBOT_ENCRYPT_MESSAGES`) |
 | `routes.prefix` | `chat` | Prefix rout balíčku (env `CHATBOT_ROUTE_PREFIX`) |
 | `routes.middleware` | `['web','auth']` | Middleware rout; host přidá své (`can:chat.use`) |
 | `routes.as` | `chat.` | Prefix názvů rout — **neměnit** (stojí na tom frontend) |
@@ -467,6 +468,53 @@ proběhlo a zaplatilo se, takže po něm musí zůstat stopa.
 - **Mapování na doménové modely** — `ExtractionResult::data()` je obyčejné pole,
   co s ním, si řídí host (ADR-019 §6).
 - **UI** — upload formulář a náhled dat patří do hosta, stejně jako u chatu.
+## Šifrování zpráv (TASK-AIBOT-01g)
+
+Chat může nést zvláštní kategorie osobních údajů (GDPR čl. 9) — pokud host
+skládá odpovědi nástrojů z citlivých doménových dat (např. zdravotní údaje),
+**před produkčním nasazením zapni `chatbot.encrypt_messages`** (env
+`CHATBOT_ENCRYPT_MESSAGES=true`, default `false`).
+
+Zapnutí přepne `Models\ChatMessage::casts()`:
+
+- `content` → `encrypted`,
+- `action` → `encrypted:array` (payload write nástroje může nést PII),
+- `steps` → `encrypted:array` (průběh tool-use smyčky).
+
+Precedent v balíčku: `Models\UserAiSettings` `api_key => encrypted`.
+
+**`chat_conversations.title` se při zapnutém přepínači NEPLNÍ z textu
+uživatele** — `ChatController::initialTitle()` vrátí generický titulek
+(„Konverzace 3.8.2026") místo `Str::limit($message, 60)`. Sloupec `title`
+zůstává i po zapnutí plaintext (šifrování by kvůli délce ciphertextu
+přetéklo `varchar(255)`) — generický titulek je jediná ochrana proti leaku.
+
+### Dopady zapnutí
+
+- **DB fulltext / `LIKE` nad `content`/`action`/`steps` přestane fungovat.**
+  Balíček sám nad těmito sloupci nevyhledává; pokud to dělá host, musí to
+  sám ošetřit (jiný zdroj, samostatný nešifrovaný index) nebo si nechat
+  přepínač vypnutý.
+- **`APP_KEY` hosta musí zůstat stabilní.** Laravel `encrypted` cast
+  dešifruje jen proti aktuálnímu klíči — rotace `APP_KEY` bez re-encryptu
+  znamená ztrátu čitelnosti CELÉ historie zpráv.
+- **Existující data se nepřeshiftrují automaticky.** Přepnutí platí jen pro
+  nově uložené zprávy; re-encrypt/backfill staré historie (byla-li nějaká
+  uložena s vypnutým přepínačem) je na hostovi.
+
+### Migrace `action`/`steps` json → text
+
+Sloupce `chat_messages.action`/`steps` jsou v čisté instalaci `json`
+(nativní typ PostgreSQL) — ale `encrypted:array` ukládá base64 ciphertext
+string, který PostgreSQL do `json` sloupce nepřijme (musí to být validní
+JSON hodnota). Migrace balíčku
+(`database/migrations/2026_08_03_100000_change_chat_messages_action_steps_to_text.php`)
+je mění na `text` — `array`/`encrypted:array` cast funguje nad `text`
+sloupcem beze změny.
+
+Migrace je no-op na SQLite (tam `json` odjakživa kompiluje na `text`
+afinitu) a záměrně no-op na MySQL (mimo podporovanou produkční matici
+balíčku — host na MySQL by potřeboval vlastní migraci).
 
 ## Bezpečnostní invarianty
 
@@ -490,6 +538,9 @@ proběhlo a zaplatilo se, takže po něm musí zůstat stopa.
 11. Překročení limitu velikosti nebo počtu stran je **výjimka, ne tiché
     oříznutí** — oříznutá faktura by se extrahovala „úspěšně" a chybějící
     položky by nikdo nepoznal.
+12. Se zapnutým `encrypt_messages` jsou `content`/`action`/`steps`
+    `chat_messages` šifrované (`encrypted` casty) a titulek konverzace se
+    neplní z textu uživatele — viz sekce „Šifrování zpráv" výše.
 
 ## Console command `chatbot:models-check`
 

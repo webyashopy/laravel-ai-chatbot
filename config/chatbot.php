@@ -56,6 +56,39 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Šifrování zpráv (TASK-AIBOT-01g)
+    |--------------------------------------------------------------------------
+    |
+    | Chat může nést zvláštní kategorie osobních údajů (GDPR čl. 9) — host
+    | s doménovými daty (např. zdravotní údaje case-u v odpovědi nástroje)
+    | MUSÍ tento přepínač zapnout před produkčním nasazením. Zapnutí mění
+    | Eloquent casty `Models\ChatMessage::casts()` na `content` (`encrypted`),
+    | `action`/`steps` (`encrypted:array`) — vzor `Models\UserAiSettings`
+    | `api_key => encrypted`. Titulek konverzace (`chat_conversations.title`)
+    | se při zapnutém přepínači NEplní z textu uživatele (viz
+    | `ChatController::initialTitle()`) — generický titulek s datem místo
+    | plaintext leaku prvního dotazu.
+    |
+    | DOPADY zapnutí:
+    |  - DB fulltext / `LIKE` nad `content`/`action`/`steps` PŘESTANE fungovat
+    |    (balíček sám nad nimi nevyhledává — pokud to dělá host, musí to sám
+    |    ošetřit nebo přepnout na jiný zdroj);
+    |  - `APP_KEY` hosta musí zůstat STABILNÍ — rotace klíče bez re-encryptu
+    |    znamená ZTRÁTU čitelnosti celé historie zpráv (Laravel `encrypted`
+    |    cast dešifruje jen proti aktuálnímu `APP_KEY`);
+    |  - existující data se NEPŘESHIFRUJÍ automaticky — přepnutí platí jen
+    |    pro nově uložené zprávy, backfill staré historie je na hostovi.
+    |
+    | Sloupce `action`/`steps` jsou v čisté instalaci `json` (PostgreSQL) —
+    | `encrypted:array` ukládá base64 ciphertext string, který PostgreSQL do
+    | `json` sloupce nepřijme. Migrace balíčku je proto mění na `text`
+    | (no-op na SQLite, kde `json` odjakživa kompiluje na `text`).
+    |
+    */
+    'encrypt_messages' => (bool) env('CHATBOT_ENCRYPT_MESSAGES', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Routy
     |--------------------------------------------------------------------------
     |
